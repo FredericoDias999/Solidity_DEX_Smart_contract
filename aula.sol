@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20; // Recomendo usar uma versão um pouco mais recente para maior segurança
+
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract DecentralizedFinance is ERC20 {
+    
+    // --- Variáveis de Estado Requeridas ---
+    address public owner; // Endereço de quem faz o deploy 
+    uint256 public loanCounter; // Usado como ID único para os empréstimos 
+    
+    // Parâmetros do sistema (configurados no construtor) 
+    uint256 public dexSwapRate; // Valor de 1 DEX em Wei 
+    uint256 public paymentCycle; // Duração do ciclo (ex: 4 semanas ou 3 min) 
+    uint256 public interestRate; // Taxa de juros do empréstimo
+    uint256 public terminationFee; // Taxa fixa aplicada no cancelamento antecipado
+    uint256 public maxLoanDuration; // Prazo máximo de um empréstimo 
+
+    // --- Estrutura do Empréstimo  ---
+    struct Loan {
+        address borrower; // Endereço do utilizador com o empréstimo 
+        uint256 collateral; // Quantidade de DEX usada como garantia 
+        uint256 amount; // Quantidade de ETH (em Wei) emprestada 
+        uint256 deadline; // Número de períodos (ciclos) do empréstimo
+        
+        // Variáveis extra de controlo necessárias para lógica de pagamentos e punições
+        uint256 nextPaymentDue; // Timestamp que indica o limite para o próximo pagamento
+        uint256 periodsPaid; // Quantos períodos já foram efetivamente pagos
+        bool active; // Determina se o empréstimo ainda está em curso
+    }
+
+    // Mapeamento para guardar os empréstimos 
+    mapping(uint256 => Loan) public loans;
+
+    // --- Eventos ---
+    event loanCreated(address borrower, uint256 amount, uint256 deadline); 
+    event loanFinished(address borrower, uint256 amount); 
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can call this function");
+        _;
+    }
+
+    // --- Construtor ---
+    constructor(
+        uint256 _dexSwapRate,
+        uint256 _paymentCycle,
+        uint256 _interestRate,
+        uint256 _terminationFee,
+        uint256 _maxLoanDuration
+    ) ERC20("DEX", "DEX") { 
+        owner = msg.sender;
+        
+        // Inicialização de variáveis pelo input
+        dexSwapRate = _dexSwapRate;
+        paymentCycle = _paymentCycle;
+        interestRate = _interestRate;
+        terminationFee = _terminationFee;
+        maxLoanDuration = _maxLoanDuration;
+
+        // O enunciado pede 10^18 DEX mintados. Como os ERC20 usam 18 casas decimais,
+        // o valor real gerado é 10**18 * 10**decimals().
+        //_mint(address(this), 10**18 * 10**decimals()); 
+        _mint(address(this), 10**18);
+    }
+
+    function buyDex() external payable {
+        // Garantir que o utilizador enviou algum ETH
+        require(msg.value > 0, "Tem de enviar ETH para comprar DEX.");
+
+        // Calcular a quantidade de DEX.
+        // Multiplicamos por 10**18 devido as casas decimais do token ERC20.
+        uint256 dexAmount = (msg.value * 10**18) / dexSwapRate;
+
+        // Garantir que o contrato tem DEX suficiente para vender
+        require(balanceOf(address(this)) >= dexAmount, "O contrato nao tem DEX suficiente para esta venda.");
+
+        // O contrato transfere os DEX do seu proprio saldo para o utilizador
+        _transfer(address(this), msg.sender, dexAmount);
+    }
+
+    function sellDex(uint256 dexAmount) external {
+        // Garantir que o utilizador quer vender uma quantidade valida
+        require(dexAmount > 0, "A quantidade de DEX tem de ser maior que zero.");
+        
+        // Garantir que o utilizador tem realmente o DEX que quer vender
+        require(balanceOf(msg.sender) >= dexAmount, "Saldo de DEX insuficiente.");
+
+        // Calcular a quantidade de ETH (Wei) a devolver ao utilizador
+        uint256 ethAmount = (dexAmount * dexSwapRate) / 10**18;
+
+        // Verificar se o contrato tem saldo de ETH (Wei) suficiente para pagar 
+        require(address(this).balance >= ethAmount, "O contrato nao tem saldo de ETH suficiente para esta transacao.");
+
+        // 1. O contrato retira o DEX do utilizador e guarda para si
+        _transfer(msg.sender, address(this), dexAmount);
+
+        // 2. O contrato envia o ETH de volta para o utilizador de forma moderna e segura
+        (bool success, ) = payable(msg.sender).call{value: ethAmount}("");
+        require(success, "A transferencia de ETH falhou.");
+    }
+
+    function loan(uint256 dexAmount, uint256 deadline) external returns (uint256) {
+        // 1. Validações iniciais de segurança
+        require(dexAmount > 0, "A quantidade de colateral DEX tem de ser maior que zero.");
+        require(deadline > 0 && deadline <= maxLoanDuration, "O prazo e invalido ou excede o limite maximo.");
+        require(balanceOf(msg.sender) >= dexAmount, "Nao tem saldo DEX suficiente para usar como colateral.");
+
+        // 2. Calcular o valor do colateral em ETH (Wei)
+        // Multiplicar o DEX pela taxa e dividir pelas casas decimais (10^18)
+        uint256 collateralValueInWei = (dexAmount * dexSwapRate) / 10**18;
+        
+        // 3. A regra dos 50%: O utilizador recebe metade do valor do colateral em ETH
+        uint256 loanAmount = collateralValueInWei / 2;
+        
+        require(loanAmount > 0, "O valor do colateral e demasiado baixo para gerar um emprestimo.");
+        require(address(this).balance >= loanAmount, "O contrato nao tem liquidez de ETH suficiente no momento.");
+
+        // 4. Trancar o colateral: Transferir DEX do utilizador para o contrato
+        _transfer(msg.sender, address(this), dexAmount);
+
+        // 5. Registar o empréstimo
+        uint256 currentLoanId = loanCounter;
+        
+        loans[currentLoanId] = Loan({
+            borrower: msg.sender,
+            collateral: dexAmount,
+            amount: loanAmount,
+            deadline: deadline,
+            nextPaymentDue: block.timestamp + paymentCycle, // O relógio começa a contar agora!
+            periodsPaid: 0,
+            active: true
+        });
+        
+        // Preparar o ID para o próximo empréstimo
+        loanCounter++;
+
+        // 6. Enviar o ETH (empréstimo) para o utilizador de forma moderna e segura
+        (bool success, ) = payable(msg.sender).call{value: loanAmount}("");
+        require(success, "A transferencia de ETH do emprestimo falhou.");
+
+        // 7. Emitir o evento de criação de empréstimo
+        emit loanCreated(msg.sender, loanAmount, deadline);
+
+        // 8. Retornar o ID do empréstimo
+        return currentLoanId;
+    }
+}

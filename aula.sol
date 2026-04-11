@@ -145,4 +145,106 @@ contract DecentralizedFinance is ERC20 {
         // 8. Retornar o ID do empréstimo
         return currentLoanId;
     }
+
+    function makePayment(uint256 loanId) external payable {
+        // 1. Carregar o empréstimo da memória (usamos storage para poder alterar os valores)
+        Loan storage currentLoan = loans[loanId];
+
+        // 2. Validações de segurança
+        require(currentLoan.active, "O emprestimo nao existe ou ja foi encerrado.");
+        require(msg.sender == currentLoan.borrower, "Apenas o titular do emprestimo pode fazer o pagamento.");
+        require(block.timestamp <= currentLoan.nextPaymentDue, "O prazo expirou. O colateral foi perdido.");
+
+        // 3. Calcular o valor do pagamento periódico
+        // Formula original: amount * interest / deadline
+        // Dividimos por 100 assumindo que interestRate é uma percentagem inteira (ex: 10 para 10%)
+        uint256 cyclePayment = (currentLoan.amount * interestRate) / (100 * currentLoan.deadline);
+        
+        uint256 totalToPay = cyclePayment;
+
+        // 4. Verificar se é o último pagamento do empréstimo
+        // Se os períodos pagos forem iguais ao prazo total menos 1, este é o último!
+        bool isLastPayment = (currentLoan.periodsPaid == currentLoan.deadline - 1);
+
+        if (isLastPayment) {
+            // No último ciclo, o utilizador tem de devolver também o valor que pediu emprestado
+            totalToPay += currentLoan.amount;
+        }
+
+        // 5. Garantir que o utilizador enviou a quantidade exata de ETH (Wei)
+        require(msg.value == totalToPay, "O valor enviado em ETH nao corresponde ao valor da prestacao atual.");
+
+        // 6. Atualizar o estado do empréstimo
+        currentLoan.periodsPaid += 1;
+        currentLoan.nextPaymentDue += paymentCycle; // Atualiza o relógio para o próximo ciclo
+
+        // 7. Lógica de Encerramento (se for o último pagamento)
+        if (isLastPayment) {
+            currentLoan.active = false; // Desativa o empréstimo
+            
+            // Devolve o colateral (DEX) ao utilizador
+            _transfer(address(this), currentLoan.borrower, currentLoan.collateral);
+            
+            // Emite o evento de conclusão exigido
+            emit loanFinished(currentLoan.borrower, currentLoan.amount);
+        }
+    }
+
+    function terminateLoan(uint256 loanId) external payable {
+        // 1. Carregar o empréstimo da memória
+        Loan storage currentLoan = loans[loanId];
+
+        // 2. Validações de segurança
+        require(currentLoan.active, "O emprestimo ja foi encerrado ou nao existe.");
+        require(msg.sender == currentLoan.borrower, "Apenas o titular do emprestimo o pode terminar.");
+        
+        // Opcional: Garantir que não expirou por falta de pagamento
+        require(block.timestamp <= currentLoan.nextPaymentDue, "O prazo expirou. O colateral foi perdido.");
+
+        // 3. Calcular o valor total a pagar
+        // O enunciado exige o pagamento total do empréstimo (amount) mais a taxa de cancelamento (terminationFee)
+        uint256 totalToPay = currentLoan.amount + terminationFee;
+
+        // 4. Verificar se o utilizador enviou o valor exato em ETH (Wei)
+        require(msg.value == totalToPay, "Valor incorreto. Deve pagar a totalidade do emprestimo mais a taxa de terminacao.");
+
+        // 5. Atualizar o estado do empréstimo
+        currentLoan.active = false; // Desativa o empréstimo para não poder ser manipulado novamente
+
+        // 6. Devolver a garantia (colateral) em DEX ao utilizador
+        _transfer(address(this), currentLoan.borrower, currentLoan.collateral);
+
+        // 7. Emitir o evento de finalização exigido pelo enunciado
+        emit loanFinished(currentLoan.borrower, currentLoan.amount);
+    }
+
+    // --- Função de Polícia (apenas para o dono) ---
+    function checkLoan(uint256 loanId) external onlyOwner {
+        // 1. Carregar o empréstimo da memória
+        Loan storage currentLoan = loans[loanId];
+
+        // 2. Garantir que o empréstimo ainda está ativo
+        require(currentLoan.active, "O emprestimo ja esta inativo ou foi concluido.");
+
+        // 3. Verificar se o devedor falhou o prazo de pagamento
+        if (block.timestamp > currentLoan.nextPaymentDue) {
+            // PUNIÇÃO: O utilizador falhou o pagamento!
+            // O empréstimo é encerrado e o colateral fica retido no contrato (é perdido pelo utilizador).
+            currentLoan.active = false;
+        } else {
+            revert("O emprestimo esta em dia. Nenhuma punicao aplicada.");
+        }
+    }
+
+    // --- Funções de Leitura (View) ---
+
+    // Retorna o saldo total de ETH no contrato (apenas para o dono)
+    function getBalance() external view onlyOwner returns (uint256) {
+        return address(this).balance; // Retorna o saldo em Wei [cite: 108]
+    }
+
+    // Retorna a quantidade de tokens DEX que o utilizador possui
+    function getDexBalance() external view returns (uint256) {
+        return balanceOf(msg.sender); // Retorna o saldo DEX de quem chama a função 
+    }
 }

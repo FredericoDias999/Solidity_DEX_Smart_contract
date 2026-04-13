@@ -48,7 +48,7 @@ contract DecentralizedFinance is ERC20 {
         uint256 _interestRate,
         uint256 _terminationFee,
         uint256 _maxLoanDuration
-    ) ERC20("DEX", "DEX") { 
+    ) ERC20("DEX", "DEX") payable { 
         owner = msg.sender;
         
         // Inicialização de variáveis pelo input
@@ -60,8 +60,8 @@ contract DecentralizedFinance is ERC20 {
 
         // O enunciado pede 10^18 DEX mintados. Como os ERC20 usam 18 casas decimais,
         // o valor real gerado é 10**18 * 10**decimals().
-        //_mint(address(this), 10**18 * 10**decimals()); 
-        _mint(address(this), 10**18);
+        _mint(address(this), 10**18 * 10**decimals()); 
+        //_mint(address(this), 10**18);
     }
 
     function buyDex() external payable {
@@ -247,4 +247,6 @@ contract DecentralizedFinance is ERC20 {
     function getDexBalance() external view returns (uint256) {
         return balanceOf(msg.sender); // Retorna o saldo DEX de quem chama a função 
     }
+
+    receive() external payable {}
 }

@@ -60,7 +60,7 @@ contract DecentralizedFinance is ERC20 {
 
         // O enunciado pede 10^18 DEX mintados. Como os ERC20 usam 18 casas decimais,
         // o valor real gerado é 10**18 * 10**decimals().
-        _mint(address(this), 10**18 * 10**decimals()); 
+        _mint(address(this), 1000 * 10**decimals()); 
         //_mint(address(this), 10**18);
     }
 

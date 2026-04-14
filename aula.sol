@@ -1,3 +1,8 @@
+//Work done by:
+//Frederico Dias nº59807
+//Pedro Rosa nº60294
+//Group 4
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20; // Recomendo usar uma versão um pouco mais recente para maior segurança
 
